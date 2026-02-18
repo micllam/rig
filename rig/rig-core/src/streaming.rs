@@ -20,6 +20,7 @@ use crate::completion::{
 use crate::message::{
     AssistantContent, Reasoning, ReasoningContent, Text, ToolCall, ToolFunction, ToolResult,
 };
+use crate::tool::server::ToolServer;
 use crate::wasm_compat::{WasmCompatSend, WasmCompatSync};
 use futures::stream::{AbortHandle, Abortable};
 use futures::{Stream, StreamExt};

@@ -2,6 +2,7 @@ use futures::{Stream, StreamExt};
 use rig::client::ProviderClient;
 use rig::providers::gemini;
 use rig::tool::ToolError;
+use rig::tool::server::ToolServer;
 use rig::{
     OneOrMany,
     agent::Agent,

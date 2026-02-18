@@ -9,7 +9,7 @@ use crate::{
     message::ToolChoice,
     tool::{
         Tool, ToolDyn, ToolSet,
-        server::{ToolServer, ToolServerHandle},
+        server::{LocalToolServer, ToolServerHandle},
     },
     vector_store::VectorStoreIndexDyn,
 };
@@ -468,9 +468,9 @@ where
 
     /// Build the agent with no tools configured.
     ///
-    /// An empty `ToolServer` will be created for the agent.
+    /// An empty `LocalToolServer` will be created for the agent.
     pub fn build(self) -> Agent<M, P> {
-        let tool_server_handle = ToolServer::new().run();
+        let tool_server_handle = LocalToolServer::new().run();
 
         Agent {
             name: self.name,
@@ -574,10 +574,10 @@ where
 
     /// Build the agent with the configured tools.
     ///
-    /// A new `ToolServer` will be created containing all tools added via
+    /// A new `LocalToolServer` will be created containing all tools added via
     /// `.tool()`, `.tools()`, `.dynamic_tools()`, etc.
     pub fn build(self) -> Agent<M, P> {
-        let tool_server_handle = ToolServer::new()
+        let tool_server_handle = LocalToolServer::new()
             .static_tool_names(self.tool_state.static_tools)
             .add_tools(self.tool_state.tools)
             .add_dynamic_tools(self.tool_state.dynamic_tools)

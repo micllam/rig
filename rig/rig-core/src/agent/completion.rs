@@ -7,7 +7,7 @@ use crate::{
     },
     message::ToolChoice,
     streaming::{StreamingChat, StreamingCompletion, StreamingPrompt},
-    tool::server::ToolServerHandle,
+    tool::server::{ToolServer, ToolServerHandle},
     vector_store::{VectorStoreError, request::VectorSearchRequest},
     wasm_compat::WasmCompatSend,
 };

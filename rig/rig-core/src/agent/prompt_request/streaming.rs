@@ -6,7 +6,7 @@ use crate::{
     json_utils,
     message::{AssistantContent, ToolChoice, ToolResult, ToolResultContent, UserContent},
     streaming::{StreamedAssistantContent, StreamedUserContent},
-    tool::server::ToolServerHandle,
+    tool::server::{ToolServer, ToolServerHandle},
     wasm_compat::{WasmBoxedFuture, WasmCompatSend},
 };
 use futures::{Stream, StreamExt};

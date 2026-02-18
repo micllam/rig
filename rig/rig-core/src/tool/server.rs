@@ -11,9 +11,45 @@ use crate::{
     completion::{CompletionError, ToolDefinition},
     tool::{Tool, ToolDyn, ToolError, ToolSet, ToolSetError},
     vector_store::{VectorSearchRequest, VectorStoreError, VectorStoreIndexDyn, request::Filter},
+    wasm_compat::{WasmBoxedFuture, WasmCompatSend, WasmCompatSync},
 };
 
-pub struct ToolServer {
+/// Trait for managing and invoking tools at runtime.
+pub trait ToolServer: WasmCompatSend + WasmCompatSync {
+    /// Add a tool dynamically to the server.
+    fn add_tool<'a>(
+        &'a self,
+        tool: Box<dyn ToolDyn>,
+    ) -> WasmBoxedFuture<'a, Result<(), ToolServerError>>;
+
+    /// Append an entire toolset to the server.
+    fn append_toolset<'a>(
+        &'a self,
+        toolset: ToolSet,
+    ) -> WasmBoxedFuture<'a, Result<(), ToolServerError>>;
+
+    /// Remove a tool by name from the server.
+    fn remove_tool<'a>(
+        &'a self,
+        tool_name: &'a str,
+    ) -> WasmBoxedFuture<'a, Result<(), ToolServerError>>;
+
+    /// Call a tool with the given arguments.
+    fn call_tool<'a>(
+        &'a self,
+        tool_name: &'a str,
+        args: &'a str,
+    ) -> WasmBoxedFuture<'a, Result<String, ToolServerError>>;
+
+    /// Get tool definitions, optionally filtered by a prompt.
+    fn get_tool_defs<'a>(
+        &'a self,
+        prompt: Option<String>,
+    ) -> WasmBoxedFuture<'a, Result<Vec<ToolDefinition>, ToolServerError>>;
+}
+
+/// Implementation of a local tool server.
+pub struct LocalToolServer {
     /// A list of static tool names.
     /// These tools will always exist on the tool server for as long as they are not deleted.
     static_tool_names: Vec<String>,
@@ -24,13 +60,13 @@ pub struct ToolServer {
     toolset: Arc<RwLock<ToolSet>>,
 }
 
-impl Default for ToolServer {
+impl Default for LocalToolServer {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ToolServer {
+impl LocalToolServer {
     pub fn new() -> Self {
         Self {
             static_tool_names: Vec::new(),
@@ -64,7 +100,7 @@ impl ToolServer {
         // .tool() is impossible since the toolset field is private, and the server cannot
         // be running prior to run(), which consumes self.
         Arc::get_mut(&mut self.toolset)
-            .expect("ToolServer::tool() called after run()")
+            .expect("LocalToolServer::tool() called after run()")
             .get_mut()
             .add_tool(tool);
         self.static_tool_names.push(toolname);
@@ -81,7 +117,7 @@ impl ToolServer {
         // .rmcp_tool() is impossible since the toolset field is private, and the server cannot
         // be running prior to run(), which consumes self.
         Arc::get_mut(&mut self.toolset)
-            .expect("ToolServer::rmcp_tool() called after run()")
+            .expect("LocalToolServer::rmcp_tool() called after run()")
             .get_mut()
             .add_tool(McpTool::from_mcp_server(tool, client));
         self.static_tool_names.push(toolname.to_string());
@@ -101,7 +137,7 @@ impl ToolServer {
         // .dynamic_tools() is impossible since the toolset field is private, and the server cannot
         // be running prior to run(), which consumes self.
         Arc::get_mut(&mut self.toolset)
-            .expect("ToolServer::dynamic_tools() called after run()")
+            .expect("LocalToolServer::dynamic_tools() called after run()")
             .get_mut()
             .add_tools(toolset);
         self
@@ -266,113 +302,134 @@ impl ToolServer {
 #[derive(Clone)]
 pub struct ToolServerHandle(Sender<ToolServerRequest>);
 
-impl ToolServerHandle {
-    pub async fn add_tool(&self, tool: impl ToolDyn + 'static) -> Result<(), ToolServerError> {
-        let tool = Box::new(tool);
+impl ToolServer for ToolServerHandle {
+    fn add_tool<'a>(
+        &'a self,
+        tool: Box<dyn ToolDyn>,
+    ) -> WasmBoxedFuture<'a, Result<(), ToolServerError>> {
+        Box::pin(async move {
+            let (tx, rx) = futures::channel::oneshot::channel();
 
-        let (tx, rx) = futures::channel::oneshot::channel();
+            self.0
+                .send(ToolServerRequest {
+                    callback_channel: tx,
+                    data: ToolServerRequestMessageKind::AddTool(tool),
+                })
+                .await?;
 
-        self.0
-            .send(ToolServerRequest {
-                callback_channel: tx,
-                data: ToolServerRequestMessageKind::AddTool(tool),
-            })
-            .await?;
+            let res = rx.await?;
 
-        let res = rx.await?;
+            let ToolServerResponse::ToolAdded = res else {
+                return Err(ToolServerError::InvalidMessage(res));
+            };
 
-        let ToolServerResponse::ToolAdded = res else {
-            return Err(ToolServerError::InvalidMessage(res));
-        };
-
-        Ok(())
+            Ok(())
+        })
     }
 
-    pub async fn append_toolset(&self, toolset: ToolSet) -> Result<(), ToolServerError> {
-        let (tx, rx) = futures::channel::oneshot::channel();
+    fn append_toolset<'a>(
+        &'a self,
+        toolset: ToolSet,
+    ) -> WasmBoxedFuture<'a, Result<(), ToolServerError>> {
+        Box::pin(async move {
+            let (tx, rx) = futures::channel::oneshot::channel();
 
-        self.0
-            .send(ToolServerRequest {
-                callback_channel: tx,
-                data: ToolServerRequestMessageKind::AppendToolset(toolset),
-            })
-            .await?;
+            self.0
+                .send(ToolServerRequest {
+                    callback_channel: tx,
+                    data: ToolServerRequestMessageKind::AppendToolset(toolset),
+                })
+                .await?;
 
-        let res = rx.await?;
+            let res = rx.await?;
 
-        let ToolServerResponse::ToolAdded = res else {
-            return Err(ToolServerError::InvalidMessage(res));
-        };
+            let ToolServerResponse::ToolAdded = res else {
+                return Err(ToolServerError::InvalidMessage(res));
+            };
 
-        Ok(())
+            Ok(())
+        })
     }
 
-    pub async fn remove_tool(&self, tool_name: &str) -> Result<(), ToolServerError> {
-        let (tx, rx) = futures::channel::oneshot::channel();
+    fn remove_tool<'a>(
+        &'a self,
+        tool_name: &'a str,
+    ) -> WasmBoxedFuture<'a, Result<(), ToolServerError>> {
+        Box::pin(async move {
+            let (tx, rx) = futures::channel::oneshot::channel();
 
-        self.0
-            .send(ToolServerRequest {
-                callback_channel: tx,
-                data: ToolServerRequestMessageKind::RemoveTool {
-                    tool_name: tool_name.to_string(),
-                },
-            })
-            .await?;
+            self.0
+                .send(ToolServerRequest {
+                    callback_channel: tx,
+                    data: ToolServerRequestMessageKind::RemoveTool {
+                        tool_name: tool_name.to_string(),
+                    },
+                })
+                .await?;
 
-        let res = rx.await?;
+            let res = rx.await?;
 
-        let ToolServerResponse::ToolDeleted = res else {
-            return Err(ToolServerError::InvalidMessage(res));
-        };
+            let ToolServerResponse::ToolDeleted = res else {
+                return Err(ToolServerError::InvalidMessage(res));
+            };
 
-        Ok(())
+            Ok(())
+        })
     }
 
-    pub async fn call_tool(&self, tool_name: &str, args: &str) -> Result<String, ToolServerError> {
-        let (tx, rx) = futures::channel::oneshot::channel();
+    fn call_tool<'a>(
+        &'a self,
+        tool_name: &'a str,
+        args: &'a str,
+    ) -> WasmBoxedFuture<'a, Result<String, ToolServerError>> {
+        Box::pin(async move {
+            let (tx, rx) = futures::channel::oneshot::channel();
 
-        self.0
-            .send(ToolServerRequest {
-                callback_channel: tx,
-                data: ToolServerRequestMessageKind::CallTool {
-                    name: tool_name.to_string(),
-                    args: args.to_string(),
-                    span: tracing::Span::current(),
-                },
-            })
-            .await?;
+            self.0
+                .send(ToolServerRequest {
+                    callback_channel: tx,
+                    data: ToolServerRequestMessageKind::CallTool {
+                        name: tool_name.to_string(),
+                        args: args.to_string(),
+                        span: tracing::Span::current(),
+                    },
+                })
+                .await?;
 
-        let res = rx.await?;
+            let res = rx.await?;
 
-        match res {
-            ToolServerResponse::ToolExecuted { result, .. } => Ok(result),
-            ToolServerResponse::ToolError { error } => Err(ToolServerError::ToolsetError(
-                ToolSetError::ToolCallError(ToolError::ToolCallError(error.into())),
-            )),
-            invalid => Err(ToolServerError::InvalidMessage(invalid)),
-        }
+            match res {
+                ToolServerResponse::ToolExecuted { result, .. } => Ok(result),
+                ToolServerResponse::ToolError { error } => Err(ToolServerError::ToolsetError(
+                    ToolSetError::ToolCallError(ToolError::ToolCallError(error.into())),
+                )),
+                invalid => Err(ToolServerError::InvalidMessage(invalid)),
+            }
+        })
     }
 
-    pub async fn get_tool_defs(
-        &self,
+    fn get_tool_defs<'a>(
+        &'a self,
         prompt: Option<String>,
-    ) -> Result<Vec<ToolDefinition>, ToolServerError> {
-        let (tx, rx) = futures::channel::oneshot::channel();
+    ) -> WasmBoxedFuture<'a, Result<Vec<ToolDefinition>, ToolServerError>> {
+        Box::pin(async move {
+            let (tx, rx) = futures::channel::oneshot::channel();
 
-        self.0
-            .send(ToolServerRequest {
-                callback_channel: tx,
-                data: ToolServerRequestMessageKind::GetToolDefs { prompt },
-            })
-            .await?;
+            self.0
+                .send(ToolServerRequest {
+                    callback_channel: tx,
+                    data: ToolServerRequestMessageKind::GetToolDefs { prompt },
+                })
+                .await?;
 
-        let res = rx.await?;
+            let res = rx.await?;
 
-        let ToolServerResponse::ToolDefinitions(tooldefs) = res else {
-            return Err(ToolServerError::InvalidMessage(res));
-        };
+            let ToolServerResponse::ToolDefinitions(tooldefs) = res else {
+                return Err(ToolServerError::InvalidMessage(res));
+            };
 
-        Ok(tooldefs)
+            Ok(tooldefs)
+        })
     }
 }
 
@@ -427,7 +484,10 @@ mod tests {
 
     use crate::{
         completion::ToolDefinition,
-        tool::{Tool, ToolSet, server::ToolServer},
+        tool::{
+            Tool, ToolSet,
+            server::{LocalToolServer, ToolServer},
+        },
         vector_store::{
             VectorStoreError, VectorStoreIndex,
             request::{Filter, VectorSearchRequest},
@@ -547,11 +607,11 @@ mod tests {
 
     #[tokio::test]
     pub async fn test_toolserver() {
-        let server = ToolServer::new();
+        let server = LocalToolServer::new();
 
         let handle = server.run();
 
-        handle.add_tool(Adder).await.unwrap();
+        handle.add_tool(Box::new(Adder)).await.unwrap();
         let res = handle.get_tool_defs(None).await.unwrap();
 
         assert_eq!(res.len(), 1);
@@ -580,7 +640,7 @@ mod tests {
         };
 
         // Build server with static tool "add" and dynamic tools from the mock index
-        let server = ToolServer::new().tool(Adder).dynamic_tools(
+        let server = LocalToolServer::new().tool(Adder).dynamic_tools(
             1,
             mock_index,
             ToolSet::from_tools(vec![Subtractor]),
@@ -614,9 +674,10 @@ mod tests {
         };
 
         // Build server with only static tool, but dynamic index references missing tool
-        let server = ToolServer::new()
-            .tool(Adder)
-            .dynamic_tools(1, mock_index, ToolSet::default());
+        let server =
+            LocalToolServer::new()
+                .tool(Adder)
+                .dynamic_tools(1, mock_index, ToolSet::default());
 
         let handle = server.run();
 
@@ -670,7 +731,7 @@ mod tests {
         let sleep_ms: u64 = 100;
         let num_calls: u64 = 3;
 
-        let server = ToolServer::new().tool(SleeperTool::new(sleep_ms));
+        let server = LocalToolServer::new().tool(SleeperTool::new(sleep_ms));
         let handle = server.run();
 
         let start = std::time::Instant::now();

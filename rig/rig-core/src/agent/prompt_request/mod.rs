@@ -20,7 +20,7 @@ use crate::{
     completion::{CompletionModel, Document, Message, PromptError, Usage},
     json_utils,
     message::{AssistantContent, ToolChoice, ToolResultContent, UserContent},
-    tool::server::ToolServerHandle,
+    tool::server::{ToolServer, ToolServerHandle},
     wasm_compat::{WasmBoxedFuture, WasmCompatSend},
 };
 
