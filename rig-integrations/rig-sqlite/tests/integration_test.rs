@@ -1,3 +1,4 @@
+use rig::vector_store::InsertDocuments;
 use rig::vector_store::request::{SearchFilter, VectorSearchRequest};
 use serde_json::json;
 
@@ -8,42 +9,17 @@ use rig::{
     embeddings::{Embedding, EmbeddingsBuilder},
     providers::openai,
 };
-use rig_sqlite::{
-    Column, ColumnValue, SqliteSearchFilter, SqliteVectorStore, SqliteVectorStoreTable,
-};
+use rig_sqlite::{SqliteSearchFilter, SqliteVectorStore};
 use rusqlite::ffi::{sqlite3, sqlite3_api_routines, sqlite3_auto_extension};
+use serde::{Deserialize, Serialize};
 use sqlite_vec::sqlite3_vec_init;
 use tokio_rusqlite::Connection;
 
-#[derive(Embed, Clone, serde::Deserialize, Debug)]
+#[derive(Embed, Clone, Serialize, Deserialize, Debug)]
 struct Word {
     id: String,
     #[embed]
     definition: String,
-}
-
-impl SqliteVectorStoreTable for Word {
-    fn name() -> &'static str {
-        "documents"
-    }
-
-    fn schema() -> Vec<Column> {
-        vec![
-            Column::new("id", "TEXT PRIMARY KEY"),
-            Column::new("definition", "TEXT"),
-        ]
-    }
-
-    fn id(&self) -> String {
-        self.id.clone()
-    }
-
-    fn column_values(&self) -> Vec<(&'static str, Box<dyn ColumnValue>)> {
-        vec![
-            ("id", Box::new(self.id.clone())),
-            ("definition", Box::new(self.definition.clone())),
-        ]
-    }
 }
 
 type SqliteExtensionFn =
@@ -150,19 +126,15 @@ async fn vector_search_test() {
 
     let embeddings = create_embeddings(model.clone()).await;
 
-    // Initialize SQLite vector store
-    let vector_store = SqliteVectorStore::new(conn, &model)
+    let vector_store = SqliteVectorStore::new(model, conn, "documents")
         .await
         .expect("Could not initialize SQLite vector store");
 
-    // Add embeddings to vector store
     vector_store
-        .add_rows(embeddings)
+        .insert_documents(embeddings)
         .await
-        .expect("Could not add embeddings to vector store");
+        .expect("Could not insert documents into vector store");
 
-    // Create a vector index on our vector store
-    let index = vector_store.index(model);
     let query = "What is a glarb?";
     let samples = 1;
     let req = VectorSearchRequest::builder()
@@ -172,8 +144,10 @@ async fn vector_search_test() {
         .build()
         .expect("VectorSearchRequest should not fail to build here");
 
-    // Query the index
-    let results = index.top_n::<serde_json::Value>(req).await.expect("");
+    let results = vector_store
+        .top_n::<serde_json::Value>(req)
+        .await
+        .expect("");
     assert!(results.is_empty());
 }
 

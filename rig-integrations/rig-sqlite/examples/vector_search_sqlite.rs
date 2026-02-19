@@ -1,44 +1,21 @@
 use rig::client::{EmbeddingsClient, ProviderClient};
 use rig::providers::openai;
+use rig::vector_store::InsertDocuments;
 use rig::vector_store::request::VectorSearchRequest;
 use rig::{
     Embed, embeddings::EmbeddingsBuilder, providers::openai::Client, vector_store::VectorStoreIndex,
 };
-use rig_sqlite::{Column, ColumnValue, SqliteVectorStore, SqliteVectorStoreTable};
+use rig_sqlite::SqliteVectorStore;
 use rusqlite::ffi::{sqlite3, sqlite3_api_routines, sqlite3_auto_extension};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sqlite_vec::sqlite3_vec_init;
 use tokio_rusqlite::Connection;
 
-#[derive(Embed, Clone, Debug, Deserialize)]
+#[derive(Embed, Clone, Debug, Serialize, Deserialize)]
 struct Document {
     id: String,
     #[embed]
     content: String,
-}
-
-impl SqliteVectorStoreTable for Document {
-    fn name() -> &'static str {
-        "documents"
-    }
-
-    fn schema() -> Vec<Column> {
-        vec![
-            Column::new("id", "TEXT PRIMARY KEY"),
-            Column::new("content", "TEXT"),
-        ]
-    }
-
-    fn id(&self) -> String {
-        self.id.clone()
-    }
-
-    fn column_values(&self) -> Vec<(&'static str, Box<dyn ColumnValue>)> {
-        vec![
-            ("id", Box::new(self.id.clone())),
-            ("content", Box::new(self.content.clone())),
-        ]
-    }
 }
 
 type SqliteExtensionFn =
@@ -90,14 +67,9 @@ async fn main() -> Result<(), anyhow::Error> {
         .build()
         .await?;
 
-    // Initialize SQLite vector store
-    let vector_store = SqliteVectorStore::new(conn, &model).await?;
+    let vector_store = SqliteVectorStore::new(model, conn, "documents").await?;
 
-    // Add embeddings to vector store
-    vector_store.add_rows(embeddings).await?;
-
-    // Create a vector index on our vector store
-    let index = vector_store.index(model);
+    vector_store.insert_documents(embeddings).await?;
 
     let query = "What is a linglingdong?";
     let samples = 1;
@@ -106,8 +78,7 @@ async fn main() -> Result<(), anyhow::Error> {
         .query(query)
         .build()?;
 
-    // Query the index
-    let results = index
+    let results = vector_store
         .top_n::<Document>(req.clone())
         .await?
         .into_iter()
@@ -115,7 +86,11 @@ async fn main() -> Result<(), anyhow::Error> {
 
     println!("Results: {results:?}");
 
-    let id_results = index.top_n_ids(req).await?.into_iter().collect::<Vec<_>>();
+    let id_results = vector_store
+        .top_n_ids(req)
+        .await?
+        .into_iter()
+        .collect::<Vec<_>>();
 
     println!("ID results: {id_results:?}");
 

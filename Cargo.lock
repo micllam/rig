@@ -10608,7 +10608,6 @@ name = "rig-sqlite"
 version = "0.1.34"
 dependencies = [
  "anyhow",
- "chrono",
  "httpmock",
  "rig-core 0.31.0",
  "rusqlite",
